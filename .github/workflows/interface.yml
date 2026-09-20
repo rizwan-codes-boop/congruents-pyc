@@ -1,0 +1,50 @@
+name: Python-C interface checks
+on: [push, pull_request]
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Select OpenMP compiler
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            brew install gcc@14
+            echo "WORKER_CC=$(brew --prefix gcc@14)/bin/gcc-14" >> "$GITHUB_ENV"
+          else
+            echo "WORKER_CC=gcc" >> "$GITHUB_ENV"
+          fi
+      - name: Build private position-independent GSL 2.8
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 https://ftp.gnu.org/gnu/gsl/gsl-2.8.tar.gz -o gsl-2.8.tar.gz
+          echo "6a99eeed15632c6354895b1dd542ed5a855c0f15d9ad1326c6fe2b2c9e423190  gsl-2.8.tar.gz" | shasum -a 256 --check
+          tar -xzf gsl-2.8.tar.gz
+          cd gsl-2.8
+          ./configure --prefix="$RUNNER_TEMP/native" --with-pic --disable-shared
+          make -j2
+          make install
+      - name: Build pinned private cubature
+        run: |
+          git clone https://github.com/stevengj/cubature.git "$RUNNER_TEMP/cubature"
+          cd "$RUNNER_TEMP/cubature"
+          git checkout --detach 4ba70a7d595a00cfb15b02763013e0088013adb7
+          cc -O3 -fPIC -c hcubature.c -o hcubature.o
+          ar rcs "$RUNNER_TEMP/native/lib/libcubature.a" hcubature.o
+          cp cubature.h "$RUNNER_TEMP/native/include/"
+      - run: python -m pip install -e '.[units]'
+      - name: Test real galaxy workers
+        run: >-
+          make test CC="$WORKER_CC" PYTHON=python
+          CPPFLAGS="-I$RUNNER_TEMP/native/include"
+          LDLIBS="$RUNNER_TEMP/native/lib/libgsl.a $RUNNER_TEMP/native/lib/libgslcblas.a $RUNNER_TEMP/native/lib/libcubature.a -lm"
+      - name: Audit runtime allocations and failures
+        run: >-
+          make test-runtime-sanitized
+          CPPFLAGS="-I$RUNNER_TEMP/native/include"
+          LDLIBS="$RUNNER_TEMP/native/lib/libgsl.a $RUNNER_TEMP/native/lib/libgslcblas.a $RUNNER_TEMP/native/lib/libcubature.a -lm"
