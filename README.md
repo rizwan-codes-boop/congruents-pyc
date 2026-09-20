@@ -24,21 +24,10 @@ python -m pip install matplotlib
 python -m pip install -e '.[units]'
 ```
 
-The Python installation does not compile the native library. Build it using
-one of the configurations below, and rebuild after changing C source files.
+The Python installation does not compile the native library. Build it as
+described below, and rebuild after changing C source files.
 
-### Using the existing local dependency installation
-
-If the sibling `CONGRUENTS-c` folder contains the configured compiler and
-libraries:
-
-```sh
-make DEPENDENCY_ROOT=../CONGRUENTS-c solver
-```
-
-This uses dependencies from that folder, not its model code or outputs.
-
-### Building on another machine
+### Building the native library
 
 Provide GSL and cubature static libraries compiled with position-independent
 code. For GSL, use `--with-pic --disable-shared` when configuring its build;
@@ -212,14 +201,15 @@ rewritten when the code changes.
 ## Tests and reference comparison
 
 Tests are optional and do not run as part of a normal model calculation.
-With the existing local dependency installation:
+Use the same compiler and library paths as for the native build:
 
 ```sh
-make DEPENDENCY_ROOT=../CONGRUENTS-c test PYTHON=python
+make test PYTHON=python CC=gcc \
+  CPPFLAGS="-I/GSL_PREFIX/include -I/CUBATURE_PREFIX/include" \
+  LDLIBS="/GSL_PREFIX/lib/libgsl.a /GSL_PREFIX/lib/libgslcblas.a /CUBATURE_PREFIX/lib/libcubature.a -lm"
 ```
 
-For another dependency installation, pass the same compiler, `CPPFLAGS` and
-`LDLIBS` used to build the library. The tests cover table caching, numerical
+Replace the paths and compiler with your installation settings. The tests cover table caching, numerical
 helpers, output formats, error handling and single-/multi-thread agreement.
 
 To compare with independently generated improvised legacy code results:
