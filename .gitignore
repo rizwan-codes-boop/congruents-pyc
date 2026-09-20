@@ -1,0 +1,35 @@
+# macOS and editor settings
+.DS_Store
+.vscode/
+
+# Local dependencies and compiler installations
+/.conda-cache
+/.conda-pkgs
+/.deps
+/vendor
+
+# Generated binaries, tables and results
+/bin/
+/data/
+/output/
+/dist/
+/build/
+*.egg-info/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Compiled files
+*.o
+*.a
+*.so
+*.dylib
+
+# Local secrets
+.env
+.env.*
+!.env.example
