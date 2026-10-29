@@ -1,8 +1,4 @@
-"""Python observer-frame primitives matching the improvised legacy code output writer.
-
-This is not an attenuation calculator or the complete production pipeline.
-Optical depths must already have the legacy output-grid indexing convention.
-"""
+"""Observer-frame conversion with explicit source/observer optical-depth axes."""
 import numpy as np
 from scipy.integrate import quad
 from .constants import PC
@@ -38,8 +34,9 @@ def distance_factor_cm2(redshifts):
 def observer_sed(energy_gev, source_rate, redshifts, *, tau_internal, tau_ebl):
     """One component [galaxy, energy] -> E² dN/dE, GeV cm^-2 s^-1.
 
-    Resample on E/(1+z) with linear (not log-log) interpolation, zero outside
-    that domain, then apply legacy-indexed optical depths, distance and E².
+    Evaluate source rate and internal tau at E_source=(1+z)*E_observer.
+    EBL tau must already be evaluated on the observer energy axis. Linear
+    interpolation is used and spectra are zero outside the source domain.
     Tau arrays are required, finite, nonnegative and exactly the source shape;
     passing explicit zeros is an unattenuated diagnostic, not final output.
     No input array is modified. No C call, native loop, or new physics is added.
@@ -57,9 +54,11 @@ def observer_sed(energy_gev, source_rate, redshifts, *, tau_internal, tau_ebl):
             raise ValueError(f"{name} must be a finite nonnegative [galaxy, energy] array")
         arrays.append(a)
     source, internal, ebl = arrays
-    shifted = np.array([np.interp(e,e/(1+v),row,left=0.,right=0.)
+    shifted = np.array([np.interp(e*(1+v),e,row,left=0.,right=0.)
                         for v,row in zip(z,source)])
-    result = shifted*np.exp(-internal)*np.exp(-ebl)*distance_factor_cm2(z)[:,None]*e**2
+    shifted_internal = np.array([np.interp(e*(1+v),e,row)
+                                 for v,row in zip(z,internal)])
+    result = shifted*np.exp(-shifted_internal-ebl)*distance_factor_cm2(z)[:,None]*e**2
     if not np.isfinite(result).all():
         raise ValueError("Observer spectrum overflowed; inputs are outside supported range")
     result.flags.writeable = False

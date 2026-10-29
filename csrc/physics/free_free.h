@@ -30,7 +30,7 @@ static double tau_FF_MK( double E_gam__GeV, double Sigma_SFR__Msolyrm1pcm2, doub
     }
 
     double alpha_nuff = (4. * pow(e__esu,6))/(3. * c__cmsm1 * h__ergs) * pow( (2.*M_PI)/(3.*pow(m_e__g,3)*k_B__ergKm1*T_e__K), 0.5 ) *
-                        pow(Z, 2) * (1.-exp( -(h__ergs* nu_gam__Hz)/(k_B__ergKm1*T_e__K) ) )/pow(nu_gam__Hz,3) * g_ff;
+                        pow(Z, 2) * (-expm1( -(h__ergs* nu_gam__Hz)/(k_B__ergKm1*T_e__K) ) )/pow(nu_gam__Hz,3) * g_ff;
 
     double alpha_B = 2.54e-13 * pow(Z,2) * pow( T_e__K/1e4 / pow(Z,2), -0.8163 - 0.0208*log( T_e__K/1e4 / pow(Z,2) ) );
 

@@ -17,10 +17,12 @@ static double sigma_gg_BW__mb( double E1__GeV, double E2__GeV )
 {
     if ( E1__GeV * E2__GeV >= pow(m_e__GeV, 2) )
     {
-        double beta_hat = sqrt( 1. - pow(m_e__GeV, 2)/( E1__GeV * E2__GeV ) );
+        double inverse_s = pow(m_e__GeV, 2)/( E1__GeV * E2__GeV );
+        double beta_hat = sqrt( 1. - inverse_s );
 
-        return 3./16. * sigma_T__mb * (1.-pow(beta_hat,2)) *
-               (2.*beta_hat * (pow(beta_hat,2)-2.) + (3.-pow(beta_hat,4))*log((1.+beta_hat)/(1.-beta_hat)));
+        /* (1-beta) loses all precision at large s. Use 1-beta^2=1/s. */
+        return 3./16. * sigma_T__mb * inverse_s *
+               (2.*beta_hat * (pow(beta_hat,2)-2.) + (3.-pow(beta_hat,4))*(2.*log1p(beta_hat)-log(inverse_s)));
     }
     else
     {

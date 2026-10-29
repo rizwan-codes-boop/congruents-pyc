@@ -17,8 +17,8 @@ static double dEdtm1_sync__GeVsm1( double E_e__GeV, double B__G )
 {
     double gamma = E_e__GeV/m_e__GeV;
     double beta = sqrt(1. - 1./pow(gamma,2));
-
-    return -1. * sigma_T__mb * mb__cm2 * c__cmsm1 * pow(gamma,2) * pow(beta,2) * pow(B__G, 2)/(8.*M_PI) * erg__GeV;
+//the older expression was missing the factor of 4/3.
+    return -4./3. * sigma_T__mb * mb__cm2 * c__cmsm1 * pow(gamma,2) * pow(beta,2) * pow(B__G, 2)/(8.*M_PI) * erg__GeV;
 }
 
 /* Convert synchrotron losses to an electron cooling time in seconds. */
@@ -45,7 +45,11 @@ static int cg_eps_SY_4_F_SY( unsigned ndim, size_t npts, const double *x, void *
         for (j = 0; j < npts; ++j)
         {
             t = fdata_in.xE2/pow(exp(x[j*ndim+0]),2);
-            fval[j] = exp(x[j*ndim+0]) * gsl_so1D_eval( fdata_in.qess_so, exp(x[j*ndim+0]) ) * gsl_so1D_eval( fdata_in.sync_x_so, t );
+            /* R(x) is isotropically pitch-angle averaged in Python. Retain
+             * beta^2 so its bolometric power matches the cooling expression;
+             * the spectral shape itself remains a relativistic approximation. */
+            double beta2 = 1. - pow(m_e__GeV/exp(x[j*ndim+0]),2);
+            fval[j] = exp(x[j*ndim+0]) * gsl_so1D_eval( fdata_in.qess_so, exp(x[j*ndim+0]) ) * gsl_so1D_eval( fdata_in.sync_x_so, t ) * beta2;
         }
         return 0;
     }
@@ -58,7 +62,8 @@ static double eps_SY_4( double E_gam__GeV, double B__G, gsl_spline_object_1D syn
     double abserr;
     struct cg_eps_SY_4_fdata_sync fdata;
 
-    fdata.xE2 = (2.*pow(M_PI,2)*pow(m_e__g,2)*pow(c__cmsm1,3))/(3.*e__esu*B__G*h__ergs) * E_gam__GeV*m_e__GeV;
+    /* x uses the critical energy for pitch angle pi/2; R averages the angles. */
+    fdata.xE2 = (4.*M_PI*pow(m_e__g,2)*pow(c__cmsm1,3))/(3.*e__esu*B__G*h__ergs) * E_gam__GeV*m_e__GeV;
     fdata.qess_so = qess_so;
     fdata.sync_x_so = sync_x_so;
 
@@ -69,5 +74,5 @@ static double eps_SY_4( double E_gam__GeV, double B__G, gsl_spline_object_1D syn
 
     hcubature_v( 1, cg_eps_SY_4_F_SY, &fdata, 1, xmin, xmax, 100000, 0., 1e-8, ERROR_INDIVIDUAL, &res, &abserr );
 
-    return (2. * sqrt(3.) * pow(e__esu,3) * B__G)/(M_PI * h__ergs * m_e__g * pow(c__cmsm1,2)) * res/E_gam__GeV;
+    return (sqrt(3.) * pow(e__esu,3) * B__G)/(h__ergs * m_e__g * pow(c__cmsm1,2)) * res/E_gam__GeV;
 }

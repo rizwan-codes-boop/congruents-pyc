@@ -48,7 +48,8 @@ class RunResult:
                 ("tau_ff.txt",self.source.emission["tau_free_free"],"free-free optical depth"),
                 ("distmod.txt",self.distance_factor,"dist_modulus__cmm2"),
                 ("L_gamma.txt",self.gamma_luminosity,"L_gamma__GeVsm1"),
-                ("E_gam.txt",self.source.photon_energy_gev,"GeV")):
+                ("E_gam.txt",self.source.photon_energy_gev,"GeV"),
+                ("E_e.txt",self.source.electron_energy_gev,"Electron total energy [GeV]")):
             np.savetxt(folder/file,array.reshape(1,-1) if array.ndim==1 else array,fmt="%.6e",header=label,comments="")
         # NPZ retains full-precision source arrays; text files intentionally use
         # six-decimal scientific notation for compatibility with the reference writer.
@@ -64,26 +65,24 @@ class RunResult:
         (folder/"metadata.json").write_text(json.dumps(self.metadata,indent=2)+"\n")
 
 
-def run(preparation, grid=None, threads=1, *, ebl_path=None, legacy_table_precision=True):
-    """Same component treatment as the reference, including its neutrino writer.
-
-    The original writer applies photon optical depths to all 14 components,
-    including neutrinos. Preserve this behavior; it is not a physical endorsement.
-    """
+def run(preparation, grid=None, threads=1, *, ebl_path=None, legacy_table_precision=True,require_converged=True):
+    """Convert photon and neutrino source spectra with process-appropriate opacity."""
     path = Path(ebl_path) if ebl_path else Path(__file__).resolve().parents[2]/"input/tau_Eg_z_Franceschini.txt"
     ebl = EBLTable(path)
     with preparation._lock:
         preparation._ensure_open()
-        source = solve(preparation,grid,threads,legacy_table_precision=legacy_table_precision,diagnostics=True)
+        source = solve(preparation,grid,threads,legacy_table_precision=legacy_table_precision,
+                       diagnostics=True,require_converged=require_converged)
         preparation.report("Applying EBL attenuation and observer-frame conversion")
         energy = source.photon_energy_gev
         z = np.array([g.redshift for g in preparation.galaxies])
         internal = source.tau_internal
-        external = ebl.optical_depth(energy,z)
-    # Optical depths retain source-grid indexing while observer_sed resamples
-    # the emission. This reproduces the writer convention recorded in metadata.
+        external = ebl.optical_depth(energy,z,frame="observer")
+    # Neutrinos do not undergo gamma-gamma or EBL pair absorption.
+    zero = np.zeros_like(internal)
     components = {name:observer_sed(energy,source.emission[name],z,
-                    tau_internal=internal,tau_ebl=external) for name in COMPONENT_FILES}
+                    tau_internal=zero if name=="neutrino" else internal,
+                    tau_ebl=zero if name=="neutrino" else external) for name in COMPONENT_FILES}
     # Reference L_gamma excludes FF, neutrinos and the full-calorimetry diagnostic.
     total = sum(source.emission[name] for name in list(COMPONENT_FILES)[:11])*np.exp(-internal)
     luminosity = np.array([integrate_spectrum(energy,row,.1,100.) for row in total])
@@ -92,5 +91,7 @@ def run(preparation, grid=None, threads=1, *, ebl_path=None, legacy_table_precis
         a.flags.writeable = False
     return RunResult(source,components,internal,external,distance,luminosity,
         {**source.metadata,"ebl_path":str(path.resolve()),"ebl_sha256":ebl.sha256,
-         "observer_units":"GeV cm^-2 s^-1","attenuation_indexing":"improvised legacy code writer",
+         "observer_units":"GeV cm^-2 s^-1",
+         "attenuation_indexing":"internal: source energy; EBL: observer energy",
+         "neutrino_photon_attenuation":False,
          "complete_legacy_diagnostics":True})

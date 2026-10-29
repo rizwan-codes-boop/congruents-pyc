@@ -1,4 +1,4 @@
-"""Borrowed-array ABI for galaxy-parallel native physics (ABI 5).
+"""Borrowed-array ABI for galaxy-parallel native physics (ABI 8).
 
 This module contains declarations and validation, not scientific equations.
 Libraries load only when a native operation is requested. All calls are
@@ -28,7 +28,7 @@ class RunInput(ct.Structure):
                                     "transport","electrons","emission","internal")]
                 + [(n,ct.POINTER(TableInput)) for n in ("ic","gamma","bs","sy")]
                 + [("target_low",ct.c_double),("target_high",ct.c_double),("diagnostics",ct.c_int)]
-                + [(n,DP) for n in ("loss","critical","budget","radio","escape")])
+                + [(n,DP) for n in ("loss","critical","budget","radio","escape","numeric")])
 
 
 def pointer(array):
@@ -59,13 +59,13 @@ def load(path=None):
     lib = ct.CDLL(str(path.resolve()))
     lib.cg_solver_abi.argtypes = []
     lib.cg_solver_abi.restype = ct.c_uint
-    if lib.cg_solver_abi() != 5:
+    if lib.cg_solver_abi() != 8:
         raise RuntimeError("Unsupported solver ABI; rebuild the native library")
     lib.cg_solver_openmp_enabled.argtypes = []
     lib.cg_solver_openmp_enabled.restype = ct.c_int
     lib.cg_properties.argtypes = [ct.c_int,ct.c_size_t,DP,DP,IP]
     lib.cg_properties.restype = ct.c_int
-    lib.cg_transport.argtypes = [ct.c_int,ct.c_size_t,ct.c_size_t,DP,DP,DP,DP,DP,IP]
+    lib.cg_transport.argtypes = [ct.c_int,ct.c_size_t,ct.c_size_t,DP,DP,DP,DP,DP,DP,IP]
     lib.cg_transport.restype = ct.c_int
     lib.cg_spectra.argtypes = [ct.c_int,ct.POINTER(RunInput),IP]
     lib.cg_spectra.restype = ct.c_int

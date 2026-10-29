@@ -47,7 +47,7 @@ def photon(field, temp, energy):
     exponent = energy/(k.KB*temp)
     if exponent > math.log(sys.float_info.max):
         return 0.
-    value = 8*math.pi*energy**2/(k.H*k.C)**3/(math.exp(exponent)-1)
+    value = 8*math.pi*energy**2/(k.H*k.C)**3/math.expm1(exponent)
     return value*energy/(2e12*k.H) if field == "FIR" else value
 
 def dilution(galaxy, dust):
@@ -58,8 +58,9 @@ def dilution(galaxy, dust):
     """
     mass, radius, sfr = galaxy.stellar_mass_msun, galaxy.radius_kpc, galaxy.sfr_msun_per_year
     old = 10**(.8480565*math.log10(mass/.56)+1.521623)
-    young = (10**(.7969616*math.log10(sfr/.56)+9.007323) if math.log10(sfr)>-2.6
-             else 10**(.9867204*math.log10(sfr/.56)+9.476592))
+    scaled_sfr = 1.79*sfr
+    young = (1.02e9*scaled_sfr**.797 if math.log10(scaled_sfr)>-2.6
+             else 2.30e9*scaled_sfr**.987)
     fir = 10**(1.096548*math.log10(sfr/.56)+9.710084)
     densities = (k.ARAD*3000**4,k.ARAD*4000**4,k.ARAD*7500**4,4450.1668,
                  24.8863*8*math.pi/((k.H*k.C)**3*2e12*k.H)*(k.KB*dust)**5)
@@ -71,8 +72,8 @@ def radiation(galaxy, properties, energies, config):
     """Return seven photon-density spectra and eight energy-density diagnostics.
 
     Spectra follow RADIATION_NAMES; energy densities are eV/cm^3 in the
-    Urad_Ub output order. The two old-stellar diagnostic fields deliberately
-    use unsplit luminosity, so summing those diagnostics is not the total field.
+    Urad_Ub output order. Individual components use the same luminosity
+    fractions as the native cooling calculation and sum to the total field.
     """
     dust, cmb = properties["dust_temperature_k"], k.TCMB*(1+galaxy.redshift)
     d = dilution(galaxy,dust)
@@ -81,8 +82,7 @@ def radiation(galaxy, properties, energies, config):
         c = photon("CMB",cmb,e)
         f = d[4]*photon("FIR",dust,e)
         a,b,s,v = (d[i]*photon(field,0,e) for i,field in enumerate(("3000","4000","7500","UV")))
-        # Legacy diagnostic helpers use unsplit old luminosity.
-        return (c,f,a/.574,b/.426,s,v,c+f+a+b+s+v)
+        return (c,f,a,b,s,v,c+f+a+b+s+v)
     energies = tuple(float(x) for x in energies)
     if any(not math.isfinite(e) or e<=0 for e in energies):
         raise ValueError("Photon energies must be finite and positive")

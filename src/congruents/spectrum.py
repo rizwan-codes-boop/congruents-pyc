@@ -1,15 +1,13 @@
-"""Legacy log-energy quadrature of linearly interpolated differential spectra."""
-import math
+"""Exact energy moments of piecewise-linear differential spectra."""
 import numpy as np
-from .quadrature import integrate
 
 
 def integrate_spectrum(energy, rate, low=None, high=None):
     """Integrate E * rate(E) dE over a bounded GeV energy axis.
 
-    For rate in GeV^-1 s^-1 the result is GeV/s. With x=log(E), E^2
-    appears from the energy weighting and dE=E dx. Interpolation of rate
-    remains linear in E, not log-log, and bounds cannot extrapolate.
+    For rate in GeV^-1 s^-1 the result is GeV/s. Integrate each linear
+    segment analytically; interpolation is in E, not log-log, and bounds
+    cannot extrapolate.
     """
     e, y = np.asarray(energy,float), np.asarray(rate,float)
     if (e.ndim!=1 or len(e)<2 or y.shape!=e.shape or not np.isfinite(e).all() or
@@ -18,5 +16,8 @@ def integrate_spectrum(energy, rate, low=None, high=None):
     low, high = e[0] if low is None else low, e[-1] if high is None else high
     if not e[0]<=low<high<=e[-1]:
         raise ValueError("Integration bounds outside spectrum")
-    return integrate(lambda x: math.exp(x)**2*float(np.interp(math.exp(x),e,y)),
-                     math.log(low),math.log(high),rtol=1e-6)
+    # Integrate the piecewise-linear representation exactly, splitting at knots.
+    x=np.r_[low,e[(e>low)&(e<high)],high]
+    value=np.interp(x,e,y)
+    return float(np.sum(np.diff(x)/6*((2*x[:-1]+x[1:])*value[:-1]+
+                                     (x[:-1]+2*x[1:])*value[1:]),dtype=np.longdouble))

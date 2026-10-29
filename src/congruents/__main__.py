@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--cache",type=Path)
     parser.add_argument("--ebl",type=Path)
     parser.add_argument("--quiet",action="store_true",help="Suppress stage and table progress messages")
+    parser.add_argument("--allow-unconverged",action="store_true",
+                        help="Diagnostic runs only: allow missed integration tolerances, recorded in metadata")
     args = parser.parse_args()
     # Reject overwrite before spending time generating tables or spectra.
     if args.output.exists():
@@ -32,7 +34,8 @@ def main():
                      threads=args.threads,cache=args.cache,
                      progress=None if args.quiet else lambda message: print(message,flush=True)) as preparation:
         print(f"Running {len(preparation.galaxies)} galaxies; tables={args.tables}, cells={args.cells}",flush=True)
-        result = run(preparation,grid,args.threads,ebl_path=args.ebl)
+        result = run(preparation,grid,args.threads,ebl_path=args.ebl,
+                     require_converged=not args.allow_unconverged)
         result.metadata.update(wall_seconds=time.perf_counter()-start,
                                cache_hits=preparation.cache_hits,cache_misses=preparation.cache_misses)
         preparation.report(f"Writing outputs to {args.output}")

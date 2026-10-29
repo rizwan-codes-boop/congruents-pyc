@@ -1,17 +1,23 @@
 """Plot completed model exports in the Figure 9 panel arrangement.
 
 This script displays model components, not digitised paper data or a fitted
-comparison. It reads/writes the working directory's output folder and opens
-a Matplotlib window when executed. See README for selecting a run directory.
+comparison. Pass a completed run directory to select its spectra. No model
+calculation or fitted scaling is performed.
 """
 from pathlib import Path
+import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 # Paths are relative to the working directory, not this script. Point output
 # at the desired completed run before plotting; no spectra are computed here.
-OUT = Path("output")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("run", nargs="?", type=Path, default=Path("output"),
+                    help="Completed model output directory")
+parser.add_argument("--no-show", action="store_true", help="Save without opening a window")
+args = parser.parse_args()
+OUT = args.run
 
 
 def load_vector(filename):
@@ -75,7 +81,7 @@ galaxies = [
 ]
 
 # Limits read from the three panel rows of MNRAS 523, 2608, Fig. 9.
-X_LIMITS = (1.0e-16, 1.0e5)
+X_LIMITS = (1.0e-16, 1.0e6)
 ENERGY_TICKS = [1e-15, 1e-12, 1e-9, 1e-6, 1e-3, 1e0, 1e3]
 # Figure 9 shares the vertical scale within each row. Consequently, M33's
 # synchrotron components lie mostly below the displayed bottom-row range.
@@ -112,6 +118,9 @@ fig, axes = plt.subplots(
 
 for panel, (ax, (name, index, log_ssfr)) in enumerate(zip(axes.flat, galaxies)):
     row = panel // 2
+    # Figure 9 excludes this thermally dominated interval from interpretation
+    # of the non-thermal model; shading does not modify exported spectra.
+    ax.axvspan(1e-13, 1e-5, color="0.9", zorder=0)
     ax.loglog(energy, total[index], color="C0", lw=2, label="Total")
     ax.loglog(energy, pion[index], "--", color="C0", label=r"$\pi^0$ decay")
 
@@ -166,9 +175,9 @@ for panel, (ax, (name, index, log_ssfr)) in enumerate(zip(axes.flat, galaxies)):
         rotation=90,
     )
 
-    ax.text(0.46, 0.92, name, transform=ax.transAxes,
+    ax.text(0.37, 0.94, name, transform=ax.transAxes,
             fontsize=9, fontweight="bold", va="top")
-    ax.text(0.46, 0.79, rf"$\log(\mathrm{{sSFR}})={log_ssfr:g}$",
+    ax.text(0.37, 0.86, rf"$\log(\mathrm{{sSFR}})={log_ssfr:g}$",
             transform=ax.transAxes, fontsize=8, va="top")
 
     ax.set_xlim(*X_LIMITS)
@@ -213,7 +222,8 @@ fig.legend(
 )
 
 fig.subplots_adjust(left=0.10, right=0.99, top=0.91, bottom=0.18)
-fig.savefig("output/mnras2023_figure9_model.pdf")
-fig.savefig("output/mnras2023_figure9_model.png", dpi=300)
+fig.savefig(OUT / "mnras2023_figure9_model.pdf")
+fig.savefig(OUT / "mnras2023_figure9_model.png", dpi=300)
 
-plt.show()
+if not args.no_show:
+    plt.show()

@@ -34,17 +34,23 @@ class EBLTable:
         for a in (self.z,self.energy,self.values):
             a.flags.writeable = False
 
-    def optical_depth(self, source_energy_gev, redshifts):
-        """Bilinear extrapolation, E/(1+z) in eV capped at 1e15; clip tau>=0.
+    def optical_depth(self, energy_gev, redshifts, *, frame="source"):
+        """Query using source or observer energies, in GeV.
 
-        This deliberately preserves spectra.c's source-grid indexing rather
-        than resampling optical depths alongside the emitted spectrum.
+        Table energies are observed energies. Source queries are divided by
+        (1+z). Retains bilinear extrapolation and the 1-PeV query cap; neither
+        constitutes physical validation outside the supplied table range.
         """
-        e, z = np.asarray(source_energy_gev,float), np.asarray(redshifts,float)
+        if frame not in ("source", "observer"):
+            raise ValueError("EBL energy frame must be source or observer")
+        e, z = np.asarray(energy_gev,float), np.asarray(redshifts,float)
         if (e.ndim!=1 or z.ndim!=1 or not np.isfinite(e).all() or
                 not np.isfinite(z).all() or np.any(e<=0) or np.any(z<0)):
             raise ValueError("Invalid EBL query")
-        x = np.minimum(e[None,:]/(1+z[:,None])*1e9,1e15)
+        x = np.broadcast_to(e[None,:],(len(z),len(e)))
+        if frame == "source":
+            x = x/(1+z[:,None])
+        x = np.minimum(x*1e9,1e15)
         # Clipping the cell indices chooses an edge cell for extrapolation; u/v
         # are not clipped. This differs intentionally from zero-outside IC/BS tables.
         ix = np.clip(np.searchsorted(self.energy,x,side="right")-1,0,len(self.energy)-2)

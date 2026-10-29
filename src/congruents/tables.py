@@ -14,7 +14,7 @@ def bounds(galaxies, properties):
     minb = min(p["halo_magnetic_field_gauss"] for p in properties)
     maxz = max(g.redshift for g in galaxies)
     lowe, highe = 1e-3+k.ME, 1e8+k.ME
-    common = 2*math.pi**2*k.ME_G**2*k.C**3
+    common = 4*math.pi*k.ME_G**2*k.C**3
     sx0 = common/(3*k.E_ESU*maxb*k.H_ERG)*(1e-16*k.ME)/highe**2*.1
     sx1 = common/(3*k.E_ESU*minb/10*k.H_ERG)*(1e8*(1+maxz)*k.ME)/lowe**2*10
     config = (1e-16, 1e8, lowe, highe, 1.59362*k.KB*k.TCMB*1e-4, 1e-7, sx0, sx1)

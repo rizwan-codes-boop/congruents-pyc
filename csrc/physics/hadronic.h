@@ -205,7 +205,9 @@ static double J( double T, double C, double q, double m, double T_cutoff )
     double beta = 1.0;
     double p = sqrt( pow(T,2) + 2.*m*T );
 
-    return C * pow( p, -q ) * exp(-pow(T/T_cutoff, beta)) * p/T;
+    /* dN/dT = (dN/dp) dp/dT, with p^2=T(T+2m), c=1.
+     * C_norm_E integrates this same shape against kinetic energy. */
+    return C * pow( p, -q ) * exp(-pow(T/T_cutoff, beta)) * (T+m)/p;
 
 }
 
