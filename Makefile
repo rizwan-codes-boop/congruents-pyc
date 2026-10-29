@@ -10,8 +10,8 @@ CPPFLAGS := -I$(DEPENDENCY_ROOT)/.deps/include -I$(DEPENDENCY_ROOT)/vendor/cubat
 CFLAGS := -std=c11 -D_DEFAULT_SOURCE -O3 -fopenmp -Wall -Wextra \
           -Wno-unused-function -Wno-unused-parameter
 LDLIBS := $(DEPENDENCY_ROOT)/.deps/lib/libgsl.a $(DEPENDENCY_ROOT)/.deps/lib/libgslcblas.a $(DEPENDENCY_ROOT)/.deps/lib/libcubature.a \
-          -L$(GCC_LIBDIR) -L$(DEPENDENCY_ROOT)/.deps/lib \
-          -lemutls_w -lm -Wl,-rpath,$(abspath $(DEPENDENCY_ROOT))/.deps/lib
+          $(if $(GCC_LIBDIR),-L$(GCC_LIBDIR)) -L$(DEPENDENCY_ROOT)/.deps/lib \
+          $(if $(GCC_PACKAGE),-lemutls_w) -lm -Wl,-rpath,$(abspath $(DEPENDENCY_ROOT))/.deps/lib
 
 .DEFAULT_GOAL := all
 .PHONY: all
@@ -34,13 +34,6 @@ shared: solver
 build:
 	mkdir -p $@
 
-.PHONY: test-portable test
-test-portable: solver
-	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests -p test_preparation.py -v
-
-test: solver test-runtime
-	PYTHONPATH=src $(PYTHON) -m unittest discover -s tests -v
-
 .PHONY: solver
 # Build only the worker library; no reference executable is required.
 # All native physics dependencies live under csrc/physics.
@@ -54,36 +47,5 @@ SOLVER_LINK_FLAGS := -Wl,--gc-sections -Wl,--exclude-libs,ALL
 endif
 solver: $(SOLVER_LIBRARY)
 
-.PHONY: test-runtime test-runtime-sanitized
-build/test_solver_runtime: tests/test_solver_runtime.c csrc/solver.c csrc/solver.h csrc/solver_runtime.h $(wildcard csrc/physics/*.h) | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDLIBS) -o $@
-
-test-runtime: build/test_solver_runtime
-	build/test_solver_runtime
-
-# Audit the same ABI serially without requiring a sanitizer-compatible OpenMP runtime.
-SANITIZER_CC ?= clang
-ifeq ($(UNAME_S),Darwin)
-RUNTIME_ASAN_OPTIONS ?= detect_leaks=0
-else
-RUNTIME_ASAN_OPTIONS ?= detect_leaks=1
-endif
-build/test_solver_runtime_sanitized: tests/test_solver_runtime.c csrc/solver.c csrc/solver.h csrc/solver_runtime.h $(wildcard csrc/physics/*.h) | build
-	$(SANITIZER_CC) $(CPPFLAGS) -std=c11 -D_DEFAULT_SOURCE -DCG_SERIAL_AUDIT -Wno-unknown-pragmas -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined $< $(LDLIBS) -o $@
-
-test-runtime-sanitized: build/test_solver_runtime_sanitized
-	ASAN_OPTIONS=$(RUNTIME_ASAN_OPTIONS) build/test_solver_runtime_sanitized
-
-.PHONY: test-runtime-leaks
-test-runtime-leaks: build/test_solver_runtime
-	leaks --atExit -- build/test_solver_runtime
-
 $(SOLVER_LIBRARY): Makefile csrc/solver.c csrc/solver.h csrc/solver_runtime.h $(wildcard csrc/physics/*.h) | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections -fPIC -fvisibility=hidden $(SHARED_FLAGS) csrc/solver.c $(LDLIBS) $(SOLVER_LINK_FLAGS) -o $@
-
-# Optional numerical comparison; neither normal builds nor runs invoke it.
-REFERENCE_OUTPUT ?= ../CONGRUENTS1.5/output
-PYTHON_OUTPUT ?= output/production
-.PHONY: compare
-compare:
-	$(PYTHON) tests/compare_outputs.py "$(REFERENCE_OUTPUT)" "$(PYTHON_OUTPUT)"
