@@ -50,8 +50,10 @@ static double L4000K__Lsol( double M_star__Msol )
 /* Estimate the observed young-stellar luminosity from the piecewise SFR fit. */
 static double Lobs_young__Lsol( double SFR__Msolyrm1 )
   {
-  if (log10( SFR__Msolyrm1 ) > -2.6 ){return pow( 10., 0.7969616 * log10(SFR__Msolyrm1/0.56) + 9.007323 );}
-  else {return pow( 10., 0.9867204 * log10(SFR__Msolyrm1/0.56) + 9.476592 );}
+  /* Roth 2023 Eq. 13, including its IMF factor in the branch condition. */
+  double scaled_sfr = 1.79 * SFR__Msolyrm1;
+  if (log10(scaled_sfr) > -2.6){return 1.02e9 * pow(scaled_sfr, 0.797);}
+  else {return 2.30e9 * pow(scaled_sfr, 0.987);}
   }
 
 /* Assign the 7500-K fraction of the young-stellar luminosity in solar units. */
@@ -91,7 +93,7 @@ static double dndEphot_UVMattis__cmm3GeVm1(  double *params, double E_phot__GeV 
 /* Evaluate blackbody photon number density for kelvin temperature and GeV energy. */
 static double dndE_BB__cmm3GeVm1( double T__K, double E_phot__GeV )
 {
-    return (8.*M_PI*pow(E_phot__GeV,2))/pow(h__GeVs * c__cmsm1, 3) * 1./( exp( E_phot__GeV/(k_B__GeVKm1 * T__K) ) - 1. );
+    return (8.*M_PI*pow(E_phot__GeV,2))/pow(h__GeVs * c__cmsm1, 3) / expm1(E_phot__GeV/(k_B__GeVKm1 * T__K));
 }
 
 /* Evaluate the modified-blackbody FIR photon number density in cm^-3 GeV^-1. */

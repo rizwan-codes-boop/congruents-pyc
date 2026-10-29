@@ -13,7 +13,6 @@ not OpenMP or multiprocessing. Retains the 100000 evaluation ceiling.
 import heapq
 import math
 import sys
-import warnings
 
 X = (.9914553711208126392, .9491079123427585245, .8648644233597690728,
      .7415311855993944399, .5860872354676911303, .4058451513773971669,
@@ -60,8 +59,8 @@ def integrate(f, low, high, rtol=1e-8, maxeval=100000):
     """Adaptively integrate a scalar callable over finite increasing bounds.
 
     Refine the largest-error intervals in batches, but execute serially.
-    At maxeval return the current estimate with a warning, as documented;
-    this is not evidence that the requested relative tolerance was reached.
+    Reject an unconverged estimate so it cannot become a reusable physics table.
+    The error estimate is a numerical safeguard, not proof of physical accuracy.
     """
     if not math.isfinite(rtol) or rtol <= 0 or maxeval < 15:
         raise ValueError("Require positive finite tolerance and at least 15 evaluations")
@@ -94,6 +93,8 @@ def integrate(f, low, high, rtol=1e-8, maxeval=100000):
             serial += 1
             heapq.heappush(heap, (-e, serial, center, half, value))
     if error > abs(total)*rtol:
-        warnings.warn("Quadrature evaluation limit reached; legacy estimate returned",
-                      RuntimeWarning, stacklevel=2)
+        raise RuntimeError(
+            f"Quadrature did not converge after {evaluations} evaluations: "
+            f"estimated absolute error {error:g}, requested {abs(total)*rtol:g}"
+        )
     return total

@@ -37,6 +37,8 @@ typedef struct {
     double target_low,target_high;
     int diagnostics;
     double *loss,*critical,*budget,*radio,*escape;
+    /* Required numeric[n][9]; column meanings are in solver_runtime.h. */
+    double *numeric;
 } cg_run;
 /* Return the interface version used to validate Python declarations. */
 CG_API unsigned cg_solver_abi(void);
@@ -45,7 +47,7 @@ CG_API int cg_solver_openmp_enabled(void);
 /* Validate catalogue buffers and dispatch the parallel galaxy-property calculation. */
 CG_API int cg_properties(int,size_t,const double *,double *,int *);
 /* Validate transport inputs and dispatch galaxy jobs into Python-owned output buffers. */
-CG_API int cg_transport(int,size_t,size_t,const double *,const double *,const double *,double *,double *,int *);
+CG_API int cg_transport(int,size_t,size_t,const double *,const double *,const double *,const double *,double *,double *,int *);
 /* Validate shared tables and run complete independent galaxy-spectrum workers. */
 CG_API int cg_spectra(int,const cg_run *,int *);
 #endif

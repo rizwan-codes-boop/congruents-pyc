@@ -2,6 +2,7 @@
 import ctypes as ct
 import hashlib
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
@@ -75,7 +76,7 @@ EMISSION = ("IC_primary_disc","IC_secondary_disc","BS_primary_disc","BS_secondar
             "SY_primary_halo","SY_secondary_halo","free_free","tau_free_free","pion","pion_full_calorimetry","neutrino")
 
 
-def solve(preparation,grid=None,threads=1,library=None,*,legacy_table_precision=True,diagnostics=False):
+def solve(preparation,grid=None,threads=1,library=None,*,legacy_table_precision=True,diagnostics=False,require_converged=False):
     """Calculate each galaxy entirely in a native worker after serial table generation.
 
     Only galaxy indices are parallel: each worker performs disc then halo
@@ -88,7 +89,7 @@ def solve(preparation,grid=None,threads=1,library=None,*,legacy_table_precision=
     grid = SolverGrid() if grid is None else grid
     if not isinstance(grid,SolverGrid):
         raise TypeError("Expected SolverGrid")
-    if not isinstance(legacy_table_precision,bool) or not isinstance(diagnostics,bool):
+    if not all(isinstance(v,bool) for v in (legacy_table_precision,diagnostics,require_converged)):
         raise TypeError("Precision and diagnostics flags must be bool")
     threads_value(threads)
     with preparation._lock, LOCK:
@@ -104,7 +105,7 @@ def solve(preparation,grid=None,threads=1,library=None,*,legacy_table_precision=
         transport,cp = np.zeros((n,7,ne)),np.empty(n)
         statuses = np.zeros(n,dtype=np.int32)
         preparation.report(f"Calculating transport for {n} catalogue cases with up to {min(n,threads)} OpenMP workers")
-        check(lib.cg_transport(threads,n,ne,pointer(rows),pointer(props),pointer(kinetic),
+        check(lib.cg_transport(threads,n,ne,pointer(rows),pointer(props),pointer(kinetic),pointer(electron),
               pointer(transport),pointer(cp),statuses.ctypes.data_as(IP)),statuses)
         rounded = []
         # Borrow a table descriptor, retaining any rounded copy until the native call finishes.
@@ -127,15 +128,22 @@ def solve(preparation,grid=None,threads=1,library=None,*,legacy_table_precision=
             families=[(TableInput*len(fields))(*(table(kind,f,t) for f,t in fields)) for kind in ("emission","gamma")]
             bs,sy=table("bs"),table("sy")
             electrons,emission,internal = np.zeros((n,4,ne)),np.zeros((n,15,np_)),np.zeros((n,np_))
+            numeric=np.zeros((n,9))
             # Diagnostic buffers are separate from transport and never alias inputs.
             loss,critical,budget,radio,escape=(np.zeros(shape) for shape in
                 ((n,12,ne),(n,10),(n,16),(n,5),(n,2,ne)))
             args=RunInput(n,ne,np_,grid.cells,len(cmb),len(fir),
                 *(pointer(a) for a in (rows,props,kinetic,electron,photon,cp,transport,electrons,emission,internal)),
                 families[0],families[1],ct.pointer(bs),ct.pointer(sy),preparation.config[4],preparation.config[5],int(diagnostics),
-                *(pointer(a) if diagnostics else None for a in (loss,critical,budget,radio,escape)))
+                *(pointer(a) if diagnostics else None for a in (loss,critical,budget,radio,escape)),pointer(numeric))
             preparation.report(f"Lookup tables ready; starting galaxy spectra, matrix solves and diagnostics with up to {min(n,threads)} OpenMP workers")
             check(lib.cg_spectra(threads,ct.byref(args),statuses.ctypes.data_as(IP)),statuses)
+            if require_converged and np.any(numeric[:,1]>0):
+                raise RuntimeError("Native integrals missed requested tolerances; scientific output refused. "
+                                   "Use require_converged=False only for a diagnostic audit.")
+            if np.any(numeric[:,1]>0):
+                warnings.warn("Numerical audit flagged unconverged integrals; "
+                              "inspect metadata['numerical_audit'] before scientific use",RuntimeWarning,stacklevel=2)
             preparation.report("Native galaxy calculations complete")
         finally:
             for item in rounded: item.close()
@@ -159,7 +167,14 @@ def solve(preparation,grid=None,threads=1,library=None,*,legacy_table_precision=
             {name:transport[:,i] for i,name in enumerate(TRANSPORT)},
             {name:electrons[:,i] for i,name in enumerate(ELECTRONS)},
             {name:emission[:,i] for i,name in enumerate(EMISSION)},
-            {"solver_abi":5,"legacy_table_precision":legacy_table_precision,
+            {"solver_abi":8,"physics_revision":"2026-10-scientific-audit",
+             "numerical_audit_columns":["integrals","unconverged_integrals","worst_tolerance_ratio",
+                 "linear_solves","negative_cells","max_negative_l1_fraction",
+                 "max_raw_backward_error","max_clipped_backward_error","max_negative_energy_fraction"],
+             "numerical_audit":numeric.tolist(),
+             "integration_tolerances_met":bool(np.all(numeric[:,1]==0)),
+             "scientific_validation":"not certified; grid, energy closure and observational checks required",
+             "legacy_table_precision":legacy_table_precision,
              "catalogue":rows.tolist(),"catalogue_columns":["z","Mstar_Msun","Re_kpc","SFR_Msun_yr"],
              "cosmic_ray_bins":ne,"photon_bins":np_,"solver_cells":grid.cells,
              "table_grid":[preparation.grid.nx,preparation.grid.ny],"threads":threads,

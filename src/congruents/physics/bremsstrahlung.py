@@ -23,7 +23,8 @@ def generate(nx, ny, config):
     for i, out in enumerate(x):
         for j, electron in enumerate(y):
             out,electron = float(out),float(electron)
-            if out >= electron:
+            # An electron must retain at least its rest energy after emission.
+            if out >= electron-k.ME:
                 continue
             delta = out*k.ME/(4*k.ALPHA*electron*(electron-out))
             if delta > 2:

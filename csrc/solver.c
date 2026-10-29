@@ -11,6 +11,7 @@
 #include "solver.h"
 #include "solver_runtime.h"
 #include <stdatomic.h>
+#include <float.h>
 #ifndef CG_SERIAL_AUDIT
 #include <omp.h>
 #else
@@ -40,7 +41,8 @@ static int logspace_array(size_t n,double lo,double hi,double *out) {
 
 static atomic_flag busy=ATOMIC_FLAG_INIT;
 /* Return the interface version used to validate Python declarations. */
-CG_API unsigned cg_solver_abi(void) { return 5; }
+/* Revision 6 requires the isotropic R(x) table, not the old F(x) table. */
+CG_API unsigned cg_solver_abi(void) { return 8; }
 /* Report whether this library was compiled with active OpenMP workers. */
 CG_API int cg_solver_openmp_enabled(void) {
 #ifdef CG_SERIAL_AUDIT
@@ -71,6 +73,8 @@ typedef void (*galaxy_job)(size_t,void *);
 /* Run one galaxy job with a private error boundary and guaranteed allocation cleanup. */
 static void execute_job(cg_worker *w,size_t i,galaxy_job job,void *data) {
     w->count=0;w->status=0;w->phase="galaxy";cg_active=w;
+    for(size_t j=0;j<9;j++) w->numeric[j]=0.;
+    w->population_energy=NULL;
     if(!setjmp(w->escape)) job(i,data);
     cg_cleanup(w);cg_active=NULL;
 }
@@ -119,7 +123,7 @@ CG_API int cg_properties(int threads,size_t n,const double *rows,double *out,int
 
 /* Reference transport region. The primary and proton arrays are computed here
  * as part of each galaxy job; secondary injection stays in the spectrum job. */
-typedef struct { size_t ne; const double *rows,*props,*kinetic;double *out,*cp; } transport_job;
+typedef struct { size_t ne; const double *rows,*props,*kinetic,*electron;double *out,*cp; } transport_job;
 /* Calculate the energy-dependent streaming speed, capped at the speed of light. */
 static double streaming(double t,double mass,double nh,double ion,double norm,double vai,double ula) {
     return fmin(vai*(1+2.3e-3*pow(sqrt(t*t+2*mass*t),1.2)*pow(nh/1e3,1.5)*ion*2/(ula/10*norm/2e-7)),c__cmsm1/1e5);
@@ -130,6 +134,10 @@ static void transport_one(size_t i,void *data) {
     const double *r=job->rows+4*i,*p=job->props+10*i,*t=job->kinetic;
     double *o=job->out+7*ne*i;
     double norm=C_norm_E(2.2,m_p__GeV,1e8),norme=C_norm_E(2.2,m_e__GeV,1e5);
+    /* Transport has no exported quadrature audit: reject missed normalization
+     * tolerances here instead of silently losing them at the next worker call. */
+    if(cg_active->numeric[1]>0 || !isfinite(norm) || !isfinite(norme) || norm<=0 || norme<=0)
+        cg_fail(3);
     double power=r[3]*1.321680e-2*.1*1e51*erg__GeV/yr__s;
     double ula=p[3]/sqrt(2.),vai=1000*(ula/10)/2,la=p[0]/8.;
     double collision=1/(p[1]*1.4/1.17*40e-27*.5*c__cmsm1),d0=vai*la*1e5*pc__cm;
@@ -145,34 +153,43 @@ static void transport_one(size_t i,void *data) {
         if(i==10) o[j]*=.1;
     }
     for(size_t j=0;j<ne;j++) {
-        o[2*ne+j]=streaming(t[j],m_e__GeV,p[1],1,cn,vai,ula)*la*1e5*pc__cm;
-        o[3*ne+j]=streaming(t[j],m_e__GeV,p[1]/1e3,1e4,(1-o[0])*cn,vai,ula)*la*1e5*pc__cm;
-        o[4*ne+j]=J(t[j],.2*power/norme,2.2,m_e__GeV,1e5);
+        /* Electron and proton log grids are distinct; subtract rest energy
+         * on the actual electron grid, never reuse a proton-grid index. */
+        double te=job->electron[j]-m_e__GeV;
+        o[2*ne+j]=streaming(te,m_e__GeV,p[1],1,cn,vai,ula)*la*1e5*pc__cm;
+        o[3*ne+j]=streaming(te,m_e__GeV,p[1]/1e3,1e4,(1-o[0])*cn,vai,ula)*la*1e5*pc__cm;
+        o[4*ne+j]=J(te,.2*power/norme,2.2,m_e__GeV,1e5);
         o[5*ne+j]=0.;
         o[6*ne+j]=J(t[j],cp,2.2,m_p__GeV,1e8)*o[j];
     }
     if(!values(7*ne,o,0)||!isfinite(cp)||cp<=0) cg_fail(CG_NUMERIC);
 }
 /* Validate transport inputs and dispatch galaxy jobs into Python-owned output buffers. */
-CG_API int cg_transport(int threads,size_t n,size_t ne,const double *rows,const double *props,const double *t,double *out,double *cp,int *status) {
-    if(!n||n>100000||!axis(ne,t)||!values(n*4,rows,0)||!values(n*10,props,1)||!out||!cp) return CG_INVALID;
-    transport_job job={ne,rows,props,t,out,cp};return batch(threads,n,status,transport_one,&job);
+CG_API int cg_transport(int threads,size_t n,size_t ne,const double *rows,const double *props,const double *t,const double *e,double *out,double *cp,int *status) {
+    if(!n||n>100000||!axis(ne,t)||!axis(ne,e)||e[0]<=m_e__GeV||!values(n*4,rows,0)||!values(n*10,props,1)||!out||!cp) return CG_INVALID;
+    transport_job job={ne,rows,props,t,e,out,cp};return batch(threads,n,status,transport_one,&job);
 }
 
 /* Combine reusable field planes inside the galaxy worker. The family order is
  * 3000/4000/7500/UV, all CMB temperatures, then all FIR temperatures.
- * Preserve reversed reference temperature weights and emission rounding. */
-/* Combine field kernels using galaxy dilution and the retained temperature weights. */
+ * Interpolate between enclosing planes, including both exact endpoints. */
+/* Combine field kernels using galaxy dilution and linear temperature weights. */
 static gsl_spline_object_2D combine(const cg_run *a,const cg_table_input *tables,const double *r,const double *p,int rounded) {
     double temps[2]={T_0_CMB__K*(1+r[0]),p[8]};
     size_t starts[2]={4,4+a->ncmb},counts[2]={a->ncmb,a->nfir},idx[2];double w[2];
     for(size_t k=0;k<2;k++) {
+        if(counts[k]<2 || !isfinite(temps[k])) cg_fail(CG_INVALID);
+        /* Redshift-to-temperature arithmetic can move an endpoint by an ulp. */
+        double first=tables[starts[k]].temperature,last=tables[starts[k]+counts[k]-1].temperature;
+        double tol=8.*DBL_EPSILON*fmax(fabs(first),fabs(last));
+        if(temps[k]<first-tol || temps[k]>last+tol) cg_fail(CG_INVALID);
+        temps[k]=fmax(first,fmin(last,temps[k]));
         size_t j=0;while(j<counts[k] && tables[starts[k]+j].temperature<=temps[k]) j++;
-        if(j==0||j==counts[k]) cg_fail(CG_INVALID);
+        if(counts[k]<2 || j==0 || temps[k]>tables[starts[k]+counts[k]-1].temperature) cg_fail(CG_INVALID);
+        if(j==counts[k]) j=counts[k]-1;
         idx[k]=starts[k]+j-1;
         double lo=tables[idx[k]].temperature,hi=tables[idx[k]+1].temperature;
-        double index=(double)(j-1);
-        w[k]=(index+(temps[k]-lo)/(hi-lo))-index;
+        w[k]=(temps[k]-lo)/(hi-lo);
     }
     (void)rounded;
     double d[5]={C_dil(u_rad_BB__GeVcmm3(3000),L3000K__Lsol(r[1]),r[2],p[0]),
@@ -183,25 +200,19 @@ static gsl_spline_object_2D combine(const cg_run *a,const cg_table_input *tables
     size_t len=tables[0].nx*tables[0].ny;double *z=cg_allocate(len*sizeof(double));
     for(size_t j=0;j<len;j++) {
         z[j]=d[0]*tables[0].values[j]+d[1]*tables[1].values[j]+d[2]*tables[2].values[j]+d[3]*tables[3].values[j];
-        z[j]+=w[0]*tables[idx[0]].values[j]+(1-w[0])*tables[idx[0]+1].values[j];
-        z[j]+=d[4]*(w[1]*tables[idx[1]].values[j]+(1-w[1])*tables[idx[1]+1].values[j]);
+        z[j]+=(1-w[0])*tables[idx[0]].values[j]+w[0]*tables[idx[0]+1].values[j];
+        z[j]+=d[4]*((1-w[1])*tables[idx[1]].values[j]+w[1]*tables[idx[1]+1].values[j]);
     }
     gsl_spline_object_2D result=gsl_so2D(tables[0].nx,tables[0].ny,tables[0].x,tables[0].y,z);
     cg_release(z);return result;
 }
 
-/* Energy-weighted log integration of a linearly interpolated exported array.
- * Separate from the serial observer luminosity calculation in Python. */
-typedef struct { gsl_spline_object_1D spectrum; } energy_data;
-/* Evaluate E-squared times the interpolated spectrum for log-energy integration. */
-static int energy_integrand(unsigned dim,size_t n,const double *x,void *data,unsigned fdim,double *v) {
-    energy_data *d=data;for(size_t j=0;j<n;j++) {double e=exp(x[j]);v[j]=e*e*gsl_so1D_eval(d->spectrum,e);}return 0;
-}
 /* Integrate energy-weighted spectral power over the supplied energy grid. */
 static double energy_integral(size_t n,const double *x,const double *y) {
-    energy_data data={gsl_so1D(n,x,y)};double lo=log(x[0]),hi=log(x[n-1]),v,err;
-    cg_cubature(1,energy_integrand,&data,1,&lo,&hi,100000,0,1e-6,ERROR_INDIVIDUAL,&v,&err);
-    gsl_so1D_free(data.spectrum);return v;
+    long double sum=0.;
+    for(size_t j=0;j+1<n;j++)
+        sum+=(long double)(x[j+1]-x[j])/6.*((2*x[j]+x[j+1])*y[j]+(x[j]+2*x[j+1])*y[j+1]);
+    return (double)sum;
 }
 
 /* Solve disc then halo populations, compute emission and absorption, and fill diagnostics. */
@@ -212,7 +223,7 @@ static void spectra_one(size_t i,void *data) {
     gsl_spline_object_2D ic=combine(a,a->ic,r,p,1),gamma=combine(a,a->gamma,r,p,0);
     gsl_spline_object_2D bs=gsl_so2D(a->bs->nx,a->bs->ny,a->bs->x,a->bs->y,a->bs->values);
     gsl_spline_object_1D sy=gsl_so1D(a->sy->nx,a->sy->x,a->sy->values),fc=gsl_so1D(ne,t,tr);
-    for(size_t j=0;j<ne;j++) tr[5*ne+j]=q_e(t[j],p[1],a->cp[i],1e8,fc);
+    for(size_t j=0;j<ne;j++) tr[5*ne+j]=q_e(e[j]-m_e__GeV,p[1],a->cp[i],1e8,fc);
     gsl_spline_object_1D dd=gsl_so1D(ne,e,tr+2*ne),dh=gsl_so1D(ne,e,tr+3*ne);
     gsl_spline_object_1D q1=gsl_so1D(ne,e,tr+4*ne),q2=gsl_so1D(ne,e,tr+5*ne),ss[4];
     double bounds[2]={E_CRe_lims__GeV[0],E_CRe_lims__GeV[1]};
@@ -241,6 +252,7 @@ static void spectra_one(size_t i,void *data) {
         a->internal[i*np+j]=tau_gg_gal_BW(energy,dndEphot_total__cmm3GeVm1,radiation,limits,p[0]);
     }
     if(!values(7*ne,tr,0)||!values(4*ne,el,0)||!values(15*np,em,0)||!values(np,a->internal+i*np,0)) cg_fail(CG_NUMERIC);
+    for(size_t j=0;j<9;j++) a->numeric[9*i+j]=cg_active->numeric[j];
     if(!a->diagnostics) return;
     cg_active->phase="diagnostics";
     double *loss=a->loss+12*ne*i,*critical=a->critical+10*i,*budget=a->budget+16*i,*radio=a->radio+5*i;
@@ -249,13 +261,14 @@ static void spectra_one(size_t i,void *data) {
         gsl_spline_object_1D diffusion=z?dh:dd;
         for(size_t j=0;j<ne;j++) {
             loss[(5*z)*ne+j]=tau_sync__s(e[j],b);
-            /* At the exact lower bound the diagnostic integral has zero width. */
-            loss[(5*z+1)*ne+j]=e[j]<=bounds[0]?INFINITY:tau_BS_fulltest__s(e[j],bounds,nh,bs);
-            loss[(5*z+2)*ne+j]=e[j]<=bounds[0]?INFINITY:tau_IC_fulltest__s(e[j],bounds,gamma);
+            /* Losses below the tracked grid still contribute to cooling. */
+            loss[(5*z+1)*ne+j]=tau_BS_fulltest__s(e[j],bounds,nh,bs);
+            loss[(5*z+2)*ne+j]=tau_IC_fulltest__s(e[j],bounds,gamma);
             loss[(5*z+3)*ne+j]=tau_diff__s(e[j],h,diffusion);
-            loss[(5*z+4)*ne+j]=tau_ion__s(e[j],nh);
+            loss[(5*z+4)*ne+j]=z?tau_plasma__s(e[j],nh):tau_ion__s(e[j],nh);
         }
-        double ec=sqrt(2*1.49e9*m_e__g*c__cmsm1/(3*b*e__esu))*M_PI*m_e__GeV;
+        /* Characteristic energy at sin(pitch angle)=1 for the averaged kernel. */
+        double ec=sqrt(4*M_PI*1.49e9*m_e__g*c__cmsm1/(3*b*e__esu))*m_e__GeV;
         critical[5*z]=ec/tau_BS_fulltest__s(ec,bounds,nh,bs);
         critical[5*z+1]=ec/tau_sync__s(ec,b);
         critical[5*z+2]=ec/tau_IC_fulltest__s(ec,bounds,gamma);
@@ -267,24 +280,28 @@ static void spectra_one(size_t i,void *data) {
         loss[11*ne+j]=pow(p[0]*pc__cm,2)/tr[ne+j];
     }
     for(size_t j=0;j<2*ne;j++) a->escape[2*ne*i+j]=escape[j];
+    double *electron_kinetic=cg_allocate(ne*sizeof(double));
+    for(size_t j=0;j<ne;j++) electron_kinetic[j]=e[j]-m_e__GeV;
     for(size_t k=0;k<2;k++) {
-        budget[k]=energy_integral(ne,t,tr+(4+k)*ne);
+        budget[k]=energy_integral(ne,electron_kinetic,tr+(4+k)*ne);
         size_t start=k?9:2,indices[5]={4+k,k,2+k,8+k,6+k};
         for(size_t j=0;j<5;j++) budget[start+j]=energy_integral(np,ph,em+indices[j]*np)/budget[k];
-        budget[start+5]=0;budget[start+6]=energy_integral(ne,t,escape+k*ne)/budget[k];
+        budget[start+5]=0;budget[start+6]=energy_integral(ne,electron_kinetic,escape+k*ne)/budget[k];
     }
+    cg_release(electron_kinetic);
     double re=1.49e9*h__GeVs,rtau=tau_FF_MK(re,p[6],1e4),factor=1.49e9*h__Js*h__GeVs;
     for(size_t k=0;k<4;k++) radio[k]=eps_SY_4(re,k<2?p[2]:p[9],sy,ss[k])*(k<2?exp(-rtau):1)*factor;
     radio[4]=eps_FF(re,r[2],1e4,rtau)*factor;
     for(size_t j=0;j<12*ne;j++) if(isnan(loss[j])||loss[j]<0) cg_fail(CG_NUMERIC);
     if(!values(10,critical,0)||!values(16,budget,0)||!values(5,radio,0)||!values(2*ne,escape,0)) cg_fail(CG_NUMERIC);
+    for(size_t j=0;j<9;j++) a->numeric[9*i+j]=cg_active->numeric[j];
 }
 
 /* Validate shared tables and run complete independent galaxy-spectrum workers. */
 CG_API int cg_spectra(int threads,const cg_run *a,int *status) {
     if(!a||!a->n||a->n>100000||a->ns<4||a->ns>500||!axis(a->ne,a->electron)||!axis(a->ne,a->kinetic)||!axis(a->np,a->photon)||
        !values(4*a->n,a->rows,0)||!values(10*a->n,a->props,1)||!values(a->n,a->cp,1)||!values(7*a->n*a->ne,a->transport,0)||
-       !a->electrons||!a->emission||!a->internal||!a->ic||!a->gamma||a->ncmb<2||a->nfir<2||a->ncmb>4096||a->nfir>4096||
+       !a->electrons||!a->emission||!a->internal||!a->numeric||!a->ic||!a->gamma||a->ncmb<2||a->nfir<2||a->ncmb>4096||a->nfir>4096||
        !isfinite(a->target_low)||!isfinite(a->target_high)||a->target_low<=0||a->target_high<=a->target_low||
        !table_valid(a->bs,0)||!table_valid(a->sy,1)) return CG_INVALID;
     if(a->diagnostics && (!a->loss||!a->critical||!a->budget||!a->radio||!a->escape)) return CG_INVALID;

@@ -32,6 +32,8 @@ double E_e_high_norm = 1.e8;
 double K_pi = 0.17;
 struct F_int_data
 {
+    double final_low,final_high;
+    int same_cell;
     double E_e__GeV;
     double E_f__GeV;
     double n_H__cmm3;
@@ -117,6 +119,10 @@ static double P_BS__GeVm1sm1( double E_e__GeV, double E_f__GeV, double n_H__cmm3
 
 /* Read the IC transition rate per final electron energy from its transfer table. */
 static double P_IC__GeVm1sm1( double E_e__GeV, double E_f__GeV, gsl_spline_object_2D gso2D_IC );
+
+/* Exact outgoing, incoming and lost-energy moments at fixed initial energy. */
+static void table_transition_moments(gsl_spline_object_2D table,double initial,
+                                    double low,double high,double *outgoing,double *incoming,double *loss);
 
 /* Return the neutral-pion centre-of-mass momentum in natural GeV units. */
 static double P_pi_CM( double T_p );

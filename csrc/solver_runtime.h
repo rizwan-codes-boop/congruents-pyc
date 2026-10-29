@@ -26,6 +26,10 @@ typedef struct {
     int status;
     const char *phase;
     size_t count;
+    /* Integrals, unconverged integrals, worst tolerance ratio, LU solves,
+     * negative cells, largest negative L1 fraction, raw/clipped backward error. */
+    double numeric[9];
+    const double *population_energy;
 #ifdef CG_TESTING
     size_t fail_allocation;
 #endif
@@ -181,6 +185,19 @@ static int cg_cubature(unsigned dim,integrand_v f,void *data,unsigned ndim,const
     if(!status) status=hcubature_v(dim,cg_integrand_call,&checked,ndim,a,b,maxeval,abs,rel,norm,v,err);
     if(cg_active->status) status=1;
     if(!status) for(unsigned i=0;i<dim;i++) if(!isfinite(v[i])) status=1;
+    cg_active->numeric[0]++;
+    int missed=0;
+    if(!status) for(unsigned i=0;i<dim;i++) {
+        double tolerance=fmax(abs,rel*fabs(v[i]));
+        if(!isfinite(err[i]) || err[i]<0) { status=1;break; }
+        if(err[i]>tolerance) missed=1;
+        double ratio=tolerance>0?err[i]/tolerance:(err[i]>0?1e300:0.);
+        if(getenv("CONGRUENTS_DEBUG") && ratio>fmax(1.,cg_active->numeric[2]))
+            fprintf(stderr,"quadrature in %s: value %.4g error %.4g tolerance ratio %.4g\n",
+                    cg_active->phase,v[i],err[i],ratio);
+        cg_active->numeric[2]=fmax(cg_active->numeric[2],fmin(ratio,1e300));
+    }
+    cg_active->numeric[1]+=missed;
     if(status) {
         /* Return normally through nested callbacks' enclosing functions so
          * GNU trampoline cleanup is not skipped by a non-local jump. */
@@ -194,6 +211,8 @@ static int cg_cubature(unsigned dim,integrand_v f,void *data,unsigned ndim,const
 static int cg_linear_solve(int n,double *a,double *b,double *out) {
     for(int i=0;i<n*n;i++) if(!isfinite(a[i])) cg_fail(3);
     for(int i=0;i<n;i++) if(!isfinite(b[i])) cg_fail(3);
+    double *original=cg_allocate((size_t)n*n*sizeof(double));
+    for(int i=0;i<n*n;i++) original[i]=a[i];
     gsl_matrix_view m=gsl_matrix_view_array(a,n,n);
     gsl_vector_view rhs=gsl_vector_view_array(b,n);
     gsl_vector *x=cg_own(gsl_vector_alloc(n),cg_free_vector);
@@ -205,6 +224,7 @@ static int cg_linear_solve(int n,double *a,double *b,double *out) {
         if(getenv("CONGRUENTS_DEBUG")) fprintf(stderr,"LU status %d\n",lu);
         cg_fail(3);
     }
+    double total=0.,negative=0.,weighted_total=0.,weighted_negative=0.;
     for(int i=0;i<n;i++) {
         double v=gsl_vector_get(x,i);
         if(!isfinite(v)) {
@@ -212,7 +232,36 @@ static int cg_linear_solve(int n,double *a,double *b,double *out) {
             cg_fail(3);
         }
         out[i]=fmax(0.,v);
+        total+=fabs(v);
+        double weight=cg_active->population_energy?cg_active->population_energy[i]:1.;
+        weighted_total+=weight*fabs(v);
+        if(v<0) { negative-=v;weighted_negative-=weight*v;cg_active->numeric[4]++; }
     }
+    cg_active->numeric[3]++;
+    cg_active->numeric[5]=fmax(cg_active->numeric[5],total>0?negative/total:0.);
+    double energy_fraction=weighted_total>0?weighted_negative/weighted_total:0.;
+    cg_active->numeric[8]=fmax(cg_active->numeric[8],energy_fraction);
+    /* Never silently repair a materially negative particle distribution. */
+    if(energy_fraction>1e-10) {
+        if(getenv("CONGRUENTS_DEBUG"))
+            fprintf(stderr,"negative population energy fraction %.6g in %s\n",energy_fraction,cg_active->phase);
+        cg_fail(3);
+    }
+    /* Componentwise backward error exposes damage hidden by clipping tails. */
+    for(int i=0;i<n;i++) {
+        long double raw=-b[i],clipped=-b[i],scale=fabs(b[i]),clipped_scale=fabs(b[i]);
+        for(int j=0;j<n;j++) {
+            long double term=(long double)original[i*n+j]*gsl_vector_get(x,j);
+            long double cterm=(long double)original[i*n+j]*out[j];
+            raw+=term;scale+=fabsl(term);clipped+=cterm;clipped_scale+=fabsl(cterm);
+        }
+        double before=scale>0?(double)(fabsl(raw)/scale):0.;
+        double after=clipped_scale>0?(double)(fabsl(clipped)/clipped_scale):0.;
+        cg_active->numeric[6]=fmax(cg_active->numeric[6],before);
+        cg_active->numeric[7]=fmax(cg_active->numeric[7],after);
+        if(before>1e-8) cg_fail(3);
+    }
+    cg_release(original);
     cg_release(p);cg_release(x);
     return 0;
 }
